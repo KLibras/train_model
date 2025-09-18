@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Script para treinamento de um modelo de reconhecimento de sinais (Libras)
@@ -27,6 +28,13 @@ mp_holistic = mp.solutions.holistic
 mp_drawing = mp.solutions.drawing_utils
 
 # Configurações do Dataset e Pré-processamento
+# IMPORTANTE: Certifique-se de que este caminho aponta para a pasta onde seus vídeos estão.
+# A estrutura esperada é:
+# - samples/
+#   - obrigado/
+#     - video1.mp4, video2.mp4, ...
+#   - nada/
+#     - videoA.mp4, videoB.mp4, ...
 DATA_PATH = os.path.join('samples')
 ACTIONS = np.array(['obrigado', 'nada'])
 MAX_FRAMES = 30  # Número de frames por sequência de vídeo
@@ -162,155 +170,3 @@ def build_lstm_model(input_shape: Tuple[int, int], num_classes: int) -> Sequenti
         num_classes (int): O número de classes de saída.
 
     Returns:
-        Sequential: O modelo Keras compilado.
-    """
-    model = Sequential([
-        LSTM(64, return_sequences=True, activation='relu', input_shape=input_shape),
-        Dropout(0.2),
-        LSTM(128, return_sequences=True, activation='relu'),
-        Dropout(0.2),
-        LSTM(64, return_sequences=False, activation='relu'),
-        Dropout(0.2),
-        Dense(64, activation='relu'),
-        Dropout(0.3),
-        Dense(32, activation='relu'),
-        Dense(num_classes, activation='softmax')
-    ])
-    
-    model.compile(optimizer='Adam', loss='categorical_crossentropy', metrics=['categorical_accuracy'])
-    model.summary()
-    return model
-
-def train_model(model: Sequential, X_train: np.ndarray, y_train: np.ndarray, 
-                X_val: np.ndarray, y_val: np.ndarray, 
-                class_weights: Optional[Dict[int, float]] = None) -> tf.keras.callbacks.History:
-    """
-    Treina o modelo com os dados fornecidos e callbacks.
-
-    Args:
-        model (Sequential): O modelo a ser treinado.
-        X_train, y_train (np.ndarray): Dados de treinamento.
-        X_val, y_val (np.ndarray): Dados de validação.
-        class_weights (Optional[Dict[int, float]]): Pesos para lidar com classes desbalanceadas.
-
-    Returns:
-        tf.keras.callbacks.History: O histórico de treinamento.
-    """
-    # Callbacks para otimizar o treinamento
-    early_stopping = EarlyStopping(monitor='val_loss', patience=20, restore_best_weights=True, verbose=1)
-    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=10, min_lr=0.0001, verbose=1)
-    
-    print("\nIniciando o treinamento do modelo...")
-    history = model.fit(
-        X_train, y_train,
-        epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
-        validation_data=(X_val, y_val),
-        class_weight=class_weights,
-        callbacks=[early_stopping, reduce_lr],
-        verbose=1
-    )
-    return history
-
-# --- 5. Funções de Avaliação e Conversão ---
-
-def evaluate_model(model: Sequential, X_test: np.ndarray, y_test: np.ndarray, actions: np.ndarray):
-    """
-    Avalia o desempenho do modelo no conjunto de teste.
-
-    Args:
-        model (Sequential): O modelo treinado.
-        X_test, y_test (np.ndarray): Dados de teste.
-        actions (np.ndarray): Nomes das classes para exibição.
-    """
-    print("\n" + "="*20 + " AVALIAÇÃO DO MODELO " + "="*20)
-    predictions = model.predict(X_test, verbose=0)
-    predicted_classes = np.argmax(predictions, axis=1)
-    true_classes = np.argmax(y_test, axis=1)
-
-    # Acurácia geral
-    accuracy = np.mean(predicted_classes == true_classes)
-    print(f"Acurácia Geral no Conjunto de Teste: {accuracy:.2%}\n")
-
-    # Acurácia por classe
-    print("Acurácia por Classe:")
-    for i, action in enumerate(actions):
-        class_mask = (true_classes == i)
-        if np.sum(class_mask) > 0:
-            class_accuracy = np.mean(predicted_classes[class_mask] == true_classes[class_mask])
-            print(f"  - {action}: {class_accuracy:.2%} ({np.sum(class_mask)} amostras)")
-
-def convert_and_save_tflite(model: Sequential, filename: str = 'asl_model.tflite'):
-    """
-    Converte o modelo Keras para o formato TensorFlow Lite e o salva.
-
-    Args:
-        model (Sequential): O modelo Keras treinado.
-        filename (str): O nome do arquivo para o modelo TFLite.
-    """
-    print(f"\nConvertendo o modelo para TensorFlow Lite...")
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    
-    # Configurações para compatibilidade e otimização
-    converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS, tf.lite.OpsSet.SELECT_TF_OPS]
-    converter._experimental_lower_tensor_list_ops = False
-    converter.optimizations = [tf.lite.Optimize.DEFAULT]
-    
-    tflite_model = converter.convert()
-    
-    with open(filename, 'wb') as f:
-        f.write(tflite_model)
-    print(f"Modelo TFLite salvo com sucesso como '{filename}'")
-
-# --- 6. Fluxo de Execução Principal ---
-
-def main():
-    """
-    Função principal que orquestra todo o processo de carregamento, treinamento e avaliação.
-    """
-    # Etapa 1: Carregar e pré-processar os dados
-    X, y = load_sequences_and_labels(DATA_PATH, ACTIONS)
-
-    if X.shape[0] == 0:
-        print("\nNenhum dado foi carregado. Verifique a estrutura de pastas e os arquivos de vídeo.")
-        return
-
-    # Etapa 2: Dividir os dados em conjuntos de treino, validação e teste
-    X_train_val, X_test, y_train_val, y_test = train_test_split(
-        X, y, test_size=TEST_SPLIT_SIZE, random_state=RANDOM_STATE, stratify=y
-    )
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train_val, y_train_val, test_size=VALIDATION_SPLIT_SIZE, random_state=RANDOM_STATE, stratify=y_train_val
-    )
-    print(f"\nDivisão dos dados concluída:")
-    print(f"  - Treinamento: {len(X_train)} amostras")
-    print(f"  - Validação:   {len(X_val)} amostras")
-    print(f"  - Teste:       {len(X_test)} amostras")
-
-    # Etapa 3: Calcular pesos de classe para dados desbalanceados
-    y_train_classes = np.argmax(y_train, axis=1)
-    class_weights_array = compute_class_weight('balanced', classes=np.unique(y_train_classes), y=y_train_classes)
-    class_weights = {i: weight for i, weight in enumerate(class_weights_array)}
-    print(f"Pesos de classe calculados: {class_weights}")
-
-    # Etapa 4: Construir e treinar o modelo
-    input_shape = (X_train.shape[1], X_train.shape[2])
-    num_classes = y_train.shape[1]
-    
-    model = build_lstm_model(input_shape, num_classes)
-    train_model(model, X_train, y_train, X_val, y_val, class_weights)
-
-    # Etapa 5: Avaliar o modelo treinado
-    evaluate_model(model, X_test, y_test, ACTIONS)
-
-    # Etapa 6: Salvar os modelos
-    print("\nSalvando os artefatos do modelo...")
-    model.save('asl_model.h5')
-    print("Modelo Keras salvo como 'asl_model.h5'")
-    
-    convert_and_save_tflite(model)
-    
-    print("\n--- Processo de Treinamento Concluído com Sucesso ---")
-
-if __name__ == '__main__':
-    main()
